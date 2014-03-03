@@ -29,7 +29,7 @@ var Group = (function GroupClosure() {
 	    console.log('advance ' + player);
 	    console.log(this.fc.__stack[player]);
 	    this.fc.__stack[player].pop();
-	    this.fc.__stack[player] = this.fc.__stack[player].concat(ns);
+	    this.fc.__stack[player] = this.fc.__stack[player].concat(ns).concat(undefined);
 	    console.log(this.fc.__stack[player]);
 	}
     };
@@ -53,7 +53,11 @@ var FlowController = (function FlowControllerClosure() {
 	// __groups is an array of player indexed stacks
 	// of groups.
 	this.__groups = [];
-	var all_group = new Group(this, $SESSION.players, 'all');
+	var players_index_array = [];
+	for (var i = 0; i < $SESSION.players.length; ++i) {
+            players_index_array.push(i);
+	}
+	var all_group = new Group(this, players_index_array, 'all');
 
         for (var i = 0; i < $SESSION.players.length; i++) {
 	    // For each player, the stack is just the start stage.
@@ -68,8 +72,8 @@ var FlowController = (function FlowControllerClosure() {
     FlowController.prototype = {
         start : function() {
 	    // When FlowController is started, register to try a step 
-	    // each time pulse is called.
-            $SESSION.on('pulse', this.step.bind(this));
+	    // each time any script is called.
+	    this.stepOn('script_execute');
 
 	    // Iterate over the players (__stack is indexed by player).
             for (var i = 0; i < this.__stack.length; i++) {
@@ -85,6 +89,12 @@ var FlowController = (function FlowControllerClosure() {
                 }
             }
         },
+	stepOn : function(script) {
+	    $SESSION.on(script, 'flow_control', this.step.bind(this));
+	},
+	stepOff : function(script) {
+	    $SESSION.off(script, 'flow_control');
+	},
 	// FlowController.step
         step : function() {
 	    // Update the timer on each step.
@@ -93,10 +103,11 @@ var FlowController = (function FlowControllerClosure() {
 	    // else end the session.
             var some_alive = false;
 
+            //$SESSION.log('step, player 0 stack size: ' + this.__stack[0].length);
 	    // Iterate through players (indices of __stack).
             for (var i = 0; i < this.__stack.length; i++) {
-		console.log(i);
-		console.log(this.__stack[i]);
+		//console.log(i);
+		//console.log(this.__stack[i]);
                 // Don't overflow the stack!
                 var stack_protector = 0;
 		// Eat off stages that are undefined.
@@ -112,6 +123,7 @@ var FlowController = (function FlowControllerClosure() {
 		// Empty __stack means dead because there
 		// are no more stages to go to.
                 if (this.__stack[i].length === 0) {
+                    $SESSION.log('STACK IS DEADFOR PLAYER ' + i);
 		    continue;
 		}
 
@@ -125,11 +137,15 @@ var FlowController = (function FlowControllerClosure() {
                 var cs = this.__stack[i][this.__stack[i].length - 1],
 		    groups = this.__groups[i],
                     ns = cs.step(i, groups[groups.length - 1], groups);
+
+//		console.log('trying to move player ' + i);
+//		console.log(cs);
+//		console.log(this.__stack[i]);
                 
                 this.__stack[i].pop();
                 this.__stack[i] = this.__stack[i].concat(ns); // Stack pushes will be arrays.
             }
-        
+            
             if (!some_alive) {
                 $SESSION.end();
             }
@@ -156,13 +172,23 @@ var SyncStage = (function SyncStageClosure() {
 	this.lastEnteredGroups = [];
 	this.players = [];
 	this.playerMap = [];
+	this.endings = [];
     }
 
     SyncStage.prototype = {
+        endsWhen : function(f) {
+            if (typeof f !== 'function') {
+		throw new Error('endsWhen requires a function');
+            }  else {
+		this.endings.push(f);
+            }
+        },
+        
 	goesTo : function(s2) {
 	    return Stage.prototype.goesTo.call(this, s2);
 	},
 	enter : function(player, group, groups) {
+            console.log('player ' + player + ' entering sync stage');
 	    // If we haven't yet seen this group.
 	    if (this.groups.indexOf(group) < 0) {
 		// Remember that we are holding this group.
@@ -186,19 +212,25 @@ var SyncStage = (function SyncStageClosure() {
 	    //return Stage.prototype.enter.call(this, player, group);
 	},
 	tryMoveGroup : function(player, group, groups) {
+	    console.log('trying to move group');
+	    console.log(group);
+            /*$SESSION.log('trying to move group. total groups : ' + this.groups.length);
+             $SESSION.log('current players: ' + JSON.stringify(this.players));*/
 	    var group_index = this.groups.indexOf(group);
 	    // Check if we are holding onto all members of the group.
 	    // If we didn't return, we have all the players in the group.
 	    // Otherwise, take no action (stay in the same syncstage).
 	    for (var i = 0; i < group.players.length; ++i) {
 		if (this.players.indexOf(group.players[i]) < 0) {
-		    // console.log('missing player!');
-		    // console.log(group.players[i]);
-		    // console.log(group.players);
-		    // console.log(this.players);
+		    /*$SESSION.log('missing player!');
+		     $SESSION.log(group.players[i]);
+		     $SESSION.log(JSON.stringify(group.players));
+		     $SESSION.log(JSON.stringify(this.players));*/
 		    return [this];
 		}
 	    }
+
+	    console.log('able to move group');
 
 	    if (!this.lastEnteredGroups[group_index]) {
 		// If we haven't called last enter on this group yet,
@@ -207,9 +239,17 @@ var SyncStage = (function SyncStageClosure() {
 		this.lastEnteredGroups[group_index] = true;
 	    }
 
-	    var next_stages = group.players.map(function(p) { Stage.prototype.step.call(this, p, group, groups); });
 
-	    console.log(next_stages);
+	    var next_stages,
+		self = this;
+            if (this.endings.filter(function(f) { return f.call(this, group); }).length > 0) {
+		$SESSION.log('met the exit condition');
+		next_stages = group.players.map(function(p) { return [undefined]; });
+            } else {
+		next_stages = group.players.map(function(p) { return Stage.prototype.step.call(self, p, group, groups); });
+            }
+
+	    //console.log(next_stages);
 	    
 	    // If next stage is not the same as this, the group has 
 	    // exited, so remove it.
@@ -223,7 +263,7 @@ var SyncStage = (function SyncStageClosure() {
 		}
 		return [undefined];
 	    } else {
-		console.log('return this');
+		//console.log('return this');
 		return [this];
 	    }
 	},
@@ -246,15 +286,20 @@ var SyncStage = (function SyncStageClosure() {
     return SyncStage;
 })();
 
-    
+
 var Stage = (function StageClosure() {
     function Stage(kwargs) {
         if (typeof kwargs !== 'object') kwargs = {};
         this.onEnter = typeof kwargs.onEnter === 'function' ? kwargs.onEnter : function() { };
         this.onExit = typeof kwargs.onExit === 'function' ? kwargs.onExit : function() { };
         this.exitIf = typeof kwargs.exitIf === 'function' ? kwargs.exitIf : function() { return true; };
-        this.minTime = typeof kwargs.minTime === 'number' && kwargs.minTime >= 0 ? kwargs.minTime : -1;
-        this.maxTime = typeof kwargs.maxTime === 'number' && kwargs.maxTime >= 0 ? kwargs.maxTime : -1;
+	if (typeof kwargs.fixedTime === 'number') {
+	    this.minTime = kwargs.fixedTime;
+	    this.maxTime = kwargs.fixedTime;
+	} else {
+            this.minTime = typeof kwargs.minTime === 'number' && kwargs.minTime >= 0 ? kwargs.minTime : -1;
+            this.maxTime = typeof kwargs.maxTime === 'number' && kwargs.maxTime >= 0 ? kwargs.maxTime : -1;
+	}
         this.transitions = kwargs.transitions instanceof Array ? kwargs.transitions : [];
 	this.$STAGE = {};
     }
@@ -262,18 +307,18 @@ var Stage = (function StageClosure() {
     Stage.prototype = {
         clone : function() {
             return new Stage({
-                    onEnter : this.onEnter,
-                    onExit : this.onExit,
-                    exitIf : this.exitIf,
-                    minTime : this.minTime,
-                    maxTime : this.maxTime,
-                    transitions : this.transitions });
+                onEnter : this.onEnter,
+                onExit : this.onExit,
+                exitIf : this.exitIf,
+                minTime : this.minTime,
+                maxTime : this.maxTime,
+                transitions : this.transitions });
         },
         goesTo : function(s2) {
             if (!s2 instanceof Stage) {
 		throw new Error('goesTo requires Stage argument');
 	    }
-    
+	    
             var t = new Transition({ origin : this,
                                      target : s2 });
 
@@ -298,7 +343,7 @@ var Stage = (function StageClosure() {
 	    // Try to step forward from this stage. Only allowed
 	    // if we've reached the min time AND either also reached
 	    // the max time OR meet the exitif condition.
-            if (stime >= this.minTime && (stime >= this.maxTime || this.exitIf(player, group, groups))) {
+            if (this instanceof SyncStage || (stime >= this.minTime && (stime >= this.maxTime || this.exitIf(player, group, groups)))) {
 		
 		// If there are no transitions out of here, return
 		// undefined to indicate to the flowcontroller that
@@ -310,11 +355,13 @@ var Stage = (function StageClosure() {
 		// Otherwise, look through all transitions and find the
 		// first where we meet the when condition.
                 for (var i = 0; i < this.transitions.length; i++) {
-                    if (this.transitions[i].when(player, group, groups)) {
+                    if (this.transitions[i]._when(player, group, groups)) {
                         this.exit(player, group, groups);
                         return this.transitions[i].target.enter(player, group, groups);
                     }
                 }
+                
+		return [undefined];
             }
 
 	    // If we can't do anything, return this stage (we stay
@@ -331,7 +378,7 @@ var Transition = (function TransitionClosure() {
     function Transition(kwargs) {
 	this.origin = kwargs.origin;
 	this.target = kwargs.target;
-	this.when = typeof kwargs.when === 'function' ? kwargs.when : function() { return true; };
+	this._when = typeof kwargs.when === 'function' ? kwargs.when : function() { return true; };
     }
 
     Transition.prototype = {
@@ -339,7 +386,7 @@ var Transition = (function TransitionClosure() {
             if (typeof w !== 'function') {
                 throw new Error('when requires a function that evaluates to boolean');
             }
-            this.when = w;
+            this._when = w;
         }
     };
 
@@ -394,34 +441,38 @@ var Module = (function ModuleClosure() {
                 this.iterate = typeof kwargs.iterate === 'function' ? kwargs.iterate : function() { };
                 this.continueIf = typeof kwargs.continueIf === 'function' ? kwargs.continueIf : function() { return false; };
             }
-    
+	    
             return this;
         },
 	// Module.step
 	// Step on a module is only called when we pop back up
 	// to the module in __stages.
         step : function(player, group, groups) {
-	    console.log('module stepping for player ' + player);
-	    // Iterate through the module (if looped).
-            this.iterate(player, group, groups);
+	    //console.log('module stepping for player ' + player);
 
             if (this.continueIf(player, group, groups)) {
-		console.log('meet continue if');
+                //$SESSION.log('continuing loop');
+		// Iterate through the module (if looped).
+		this.iterate(player, group, groups);
+		//console.log('meet continue if');
 		// If the loop continues, push this
 		// back onto the top of the stack, along
 		// with any inner Stages/Modules we enter.
                 return [this].concat(this.entry.enter(player, group, groups));
             } else {
-		console.log('dont meet continueif');
-		console.log(this.continueIf);
-		console.log(this.continueIf(player, group, groups));
+                //$SESSION.log('exiting loop!!');
+		//console.log('dont meet continueif');
+		//console.log(this.continueIf);
+		//console.log(this.continueIf(player, group, groups));
 		// Try to exit through any possible transitions.
                 for (var i = 0; i < this.transitions.length; i++) {
-                    if (this.transitions[i].when(player, group, groups)) {
+                    if (this.transitions[i]._when(player, group, groups)) {
                         this.exit(player, group, groups);
                         return this.transitions[i].target.enter(player, group, groups);
                     }
                 }
+                
+                //$SESSION.log('exiting to undefined');
 
                 // If we can't exit into any transitions, pop back up.
                 return [undefined];
@@ -452,9 +503,10 @@ var Module = (function ModuleClosure() {
 })();
 
 
-/*this.exports = {
-    FlowController : FlowController,
-    Stage : Stage,
-    Module : Module 
-};*/
+// this.exports = {
+//     FlowController : FlowController,
+//     Stage : Stage,
+//     Module : Module,
+//     SyncStage : SyncStage
+// };
 

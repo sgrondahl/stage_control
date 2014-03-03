@@ -1,7 +1,14 @@
-/*global _$GUI _$PLAYERS _$TIME prettyPrint*/
+/*global _$GUI _$PLAYERS _$TIME prettyPrint $*/
+
+$(function() {
+    $('#stop_run').click(function(e) {
+	e.preventDefault();
+	_$SESSION.END();
+    });
+});
 
 var _$GUI = [],
-    _$PLAYERS = [0,1,2,3,4,5,6,7],
+    _$PLAYERS = ['sam','kyle'],
     _$SESSION = {
 	__db__ : {},
 
